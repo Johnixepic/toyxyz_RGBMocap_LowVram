@@ -213,7 +213,7 @@ class SamBodyFeatures:
             )
             i = start
             profile = os.environ.get("MOCAP_EXMR_PROFILE", "").strip().lower() in ("1", "true", "yes")
-            profile_times = {name: 0.0 for name in ("batch_wait", "host_to_device", "initialize", "forward", "device_to_host", "checkpoint")}
+            profile_times = {name: 0.0 for name in ("batch_wait", "batch_to_model_device", "initialize", "forward", "token_copy", "checkpoint")}
             profile_batches = 0
 
             def profile_sync():
@@ -236,7 +236,7 @@ class SamBodyFeatures:
                     t0 = time.perf_counter()
                     batch = self._to(batch, self.device)
                     profile_sync()
-                    profile_times["host_to_device"] += time.perf_counter() - t0
+                    profile_times["batch_to_model_device"] += time.perf_counter() - t0
 
                     t0 = time.perf_counter()
                     self.model._initialize_batch(batch)
@@ -251,7 +251,7 @@ class SamBodyFeatures:
                     t0 = time.perf_counter()
                     tokens[i:i + bs] = self._tokens[:, 0].cpu()
                     profile_sync()
-                    profile_times["device_to_host"] += time.perf_counter() - t0
+                    profile_times["token_copy"] += time.perf_counter() - t0
 
                     i += bs
                     profile_batches += 1
