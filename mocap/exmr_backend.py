@@ -270,7 +270,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
         from .memory_mode import run as memory_run
         def body_features(low):
             model=acquire(model_key('exmr_sam',*[BY_KEY[key].path for key in ('flow_sam','flow_sam_config','flow_mhr')],low_memory=low),
-                lambda:SamBodyFeatures(weights/'sam-3d-body-dinov3',batch_size=2 if low else 8,num_workers=0,low_memory=low))
+                lambda:SamBodyFeatures(weights/'sam-3d-body-dinov3',batch_size=4 if low else 8,num_workers=0,low_memory=low))
             try:return model(directory,boxes,k,
                 checkpoint_path=project/'exmr_body_features.checkpoint.pt',
                 checkpoint_identity=body_signature)
