@@ -211,19 +211,71 @@ class SamBodyFeatures:
                 pin_memory=True,
             )
             i = start
+            profile = os.environ.get("MOCAP_EXMR_PROFILE", "").strip().lower() in ("1", "true", "yes")
+            profile_times = {name: 0.0 for name in ("batch_wait", "host_to_device", "initialize", "forward", "device_to_host", "checkpoint")}
+            profile_batches = 0
+
+            def profile_sync():
+                if profile and self.device != "cpu":
+                    torch.cuda.synchronize(self.device)
+
             with batch_source(loader, batch_bytes=self.batch_size*3*1024*1024*4) as batches, tqdm(
                 total=len(dataset), initial=start, desc="SAM 3D Body features", unit="frame"
             ) as pbar:
-                for batch in batches:
-                    bs = batch["img"].shape[0]
+                batch_iter = iter(batches)
+                while True:
+                    t0 = time.perf_counter()
+                    try:
+                        batch = next(batch_iter)
+                    except StopIteration:
+                        break
+                    profile_times["batch_wait"] += time.perf_counter() - t0
+                    bs = batch["img"].shape[0"]
+
+                    t0 = time.perf_counter()
                     batch = self._to(batch, self.device)
+                    profile_sync()
+                    profile_times["host_to_device"] += time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
                     self.model._initialize_batch(batch)
+                    profile_sync()
+                    profile_times["initialize"] += time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
                     self.model.forward_step(batch, decoder_type="body")
+                    profile_sync()
+                    profile_times["forward"] += time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
                     tokens[i:i + bs] = self._tokens[:, 0].cpu()
+                    profile_sync()
+                    profile_times["device_to_host"] += time.perf_counter() - t0
+
                     i += bs
+                    profile_batches += 1
                     pbar.update(bs)
                     if i % 10 == 0 or i == len(dataset):
+                        t0 = time.perf_counter()
                         save_checkpoint(i)
+                        profile_times["checkpoint"] += time.perf_counter() - t0
+
+            if profile:
+                elapsed = sum(profile_times.values())
+                print(
+                    "SAM body profile (s): "
+                    + ", ".join(f"{name}={seconds:.2f}" for name, seconds in profile_times.items())
+                    + f", measured_total={elapsed:.2f}, batches={profile_batches}, "
+                    + f"frames={i - start}, batch_size={self.batch_size}",
+                    flush=True,
+                )
+                if self.device != "cpu":
+                    print(
+                        "SAM body CUDA peak (MiB): "
+                        f"allocated={torch.cuda.max_memory_allocated(self.device) / 1024**2:.0f}, "
+                        f"reserved={torch.cuda.max_memory_reserved(self.device) / 1024**2:.0f}",
+                        flush=True,
+                    )
 
         if not torch.isfinite(tokens).all():
             raise RuntimeError("Non-finite SAM 3D Body features; refusing to save invalid output")
