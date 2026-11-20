@@ -156,6 +156,9 @@ def identity(project,stage):
         }[stage]},
         feature_decoder={name:sha256(UPSTREAM/'ExMR/third_party/sam-3d-body/sam_3d_body/models'/name)
             for name in ('decoders/promptable_decoder.py','meta_arch/sam3d_body.py')} if stage=='exmr_features' else {},
+        feature_encoder={'dinov3/vision_transformer.py':sha256(
+            UPSTREAM/'ExMR/third_party/dinov3/dinov3/models/vision_transformer.py'
+        )} if stage=='exmr_features' else {},
         upstream_api=sha256(UPSTREAM/'ExMR/exmr/pipeline.py'),
         motion_solver={name:sha256(UPSTREAM/'ExMR/exmr'/name) for name in
             ('model/exmr.py','model/global_traj.py','model/ik.py','geometry/camera.py')} if stage=='exmr' else {},
