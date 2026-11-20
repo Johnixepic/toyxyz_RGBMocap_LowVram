@@ -4,6 +4,8 @@
 # the terms of the DINOv3 License Agreement.
 
 import logging
+import os
+import time
 from functools import partial
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
@@ -306,21 +308,49 @@ class DinoVisionTransformer(nn.Module):
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
 
+        profile = os.environ.get("MOCAP_EXMR_PROFILE", "").strip().lower() in ("1", "true", "yes")
+        profile_times = {"cpu_to_cuda": 0.0, "rope": 0.0, "transformer_blocks": 0.0, "cuda_to_cpu": 0.0}
         rope_sincos, rope_device = None, None
+
+        def profile_sync():
+            if profile and torch.cuda.is_available():
+                torch.cuda.synchronize()
+
         for i, blk in enumerate(self.blocks):
             if gpu_start is not None and i == gpu_start:
+                t0 = time.perf_counter()
                 x = x.to(next(blk.parameters()).device)
+                profile_sync()
+                if profile:
+                    profile_times["cpu_to_cuda"] += time.perf_counter() - t0
 
             if self.rope_embed is not None and (self.training or rope_device != x.device):
+                t0 = time.perf_counter()
                 rope_sincos = self._mocap_rope_for_device(H, W, x.device)
+                profile_sync()
+                if profile:
+                    profile_times["rope"] += time.perf_counter() - t0
                 rope_device = x.device
 
+            t0 = time.perf_counter()
             x = blk(x, rope_sincos)
+            profile_sync()
+            if profile:
+                profile_times["transformer_blocks"] += time.perf_counter() - t0
             if i in blocks_to_take:
                 output.append(x)
 
         # The normalization and SAM decoder remain on the original device.
+        t0 = time.perf_counter()
         output = [out.to(original_device) for out in output]
+        profile_sync()
+        if profile:
+            profile_times["cuda_to_cpu"] += time.perf_counter() - t0
+            print(
+                "DINOv3 profile (s): "
+                + ", ".join(f"{name}={seconds:.3f}" for name, seconds in profile_times.items()),
+                flush=True,
+            )
         assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
         return output
 
