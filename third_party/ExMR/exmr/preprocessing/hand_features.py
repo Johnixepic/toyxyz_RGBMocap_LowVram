@@ -113,11 +113,10 @@ class HamerHandFeatures:
         with batch_source(loader, batch_bytes=self.batch_size*2*3*256*256*4) as batches, tqdm(total=len(dataset), desc="HaMeR hand features", unit="frame") as pbar:
             for crops in batches:
                 bs = crops.shape[0]
-                tokens[i : i + bs] = (
-                    self._forward(crops.reshape(-1, 3, 256, 256))
-                    .reshape(bs, 2, self.TOKEN_DIM)
-                    .cpu()
-                )
+                # Process left and right hands separately to halve peak backbone
+                # activation memory on low-VRAM GPUs.
+                tokens[i : i + bs, 0] = self._forward(crops[:, 0]).cpu()
+                tokens[i : i + bs, 1] = self._forward(crops[:, 1]).cpu()
                 i += bs
                 pbar.update(bs)
         if not torch.isfinite(tokens).all():
