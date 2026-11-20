@@ -41,6 +41,15 @@ def scene_root(project):
 
 def activate():
     import torch,cv2
+    # Match upstream ExMR's Tensor Core policy for GeForce GPUs.
+    fp16_accumulation = (
+        torch.cuda.is_available() and "GeForce" in torch.cuda.get_device_name()
+    )
+    torch.backends.cuda.matmul.allow_fp16_accumulation = fp16_accumulation
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name()
+        status = "enabled" if fp16_accumulation else "disabled"
+        print(f"ExMR CUDA FP16 accumulation: {status} ({gpu_name})", flush=True)
     from .models import BY_KEY,ready
     root=UPSTREAM/'ExMR'
     for name in ('exmr','third_party/sapiens2/sapiens','third_party/hamer/hamer','third_party/dinov3'):
