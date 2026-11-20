@@ -216,8 +216,8 @@ class SamBodyFeatures:
             profile_batches = 0
 
             def profile_sync():
-                if profile and self.device != "cpu":
-                    torch.cuda.synchronize(self.device)
+                if profile and torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
             with batch_source(loader, batch_bytes=self.batch_size*3*1024*1024*4) as batches, tqdm(
                 total=len(dataset), initial=start, desc="SAM 3D Body features", unit="frame"
@@ -272,8 +272,8 @@ class SamBodyFeatures:
                 if self.device != "cpu":
                     print(
                         "SAM body CUDA peak (MiB): "
-                        f"allocated={torch.cuda.max_memory_allocated(self.device) / 1024**2:.0f}, "
-                        f"reserved={torch.cuda.max_memory_reserved(self.device) / 1024**2:.0f}",
+                        f"allocated={torch.cuda.max_memory_allocated() / 1024**2:.0f}, "
+                        f"reserved={torch.cuda.max_memory_reserved() / 1024**2:.0f}",
                         flush=True,
                     )
 
