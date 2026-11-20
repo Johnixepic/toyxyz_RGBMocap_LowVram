@@ -47,10 +47,41 @@ def import_character(filename, out):
         addon_utils.enable('mmd_tools',default_set=False,persistent=False)
         bpy.ops.mmd_tools.import_model(filepath=str(filename),types={'MESH','ARMATURE'},scale=.08,log_level='ERROR')
     arms=[o for o in bpy.context.scene.objects if o.type=='ARMATURE']
-    if len(arms)!=1:raise ValueError('Import one humanoid armature per character file.')
-    arm=arms[0]
-    mapping=body_mapping(kind,arm.data.bones.keys(),semantic)
-    trajectory_root=body_trajectory_root({b.name:b.parent.name if b.parent else None for b in arm.data.bones},mapping)
+    if not arms:
+        raise ValueError('The character file contains no armature. Import a rigged humanoid character.')
+
+    # FBX files may contain helper/control armatures alongside the deform rig.
+    # Select the one rig that actually satisfies this retargeter's humanoid
+    # mapping instead of rejecting every file with more than one armature.
+    candidates=[]
+    rejected=[]
+    for candidate in arms:
+        try:
+            candidate_mapping=body_mapping(kind,candidate.data.bones.keys(),semantic)
+            candidate_root=body_trajectory_root(
+                {b.name:b.parent.name if b.parent else None for b in candidate.data.bones},
+                candidate_mapping,
+            )
+        except (ValueError,KeyError) as exc:
+            rejected.append(f'{candidate.name}: {exc}')
+        else:
+            candidates.append((candidate,candidate_mapping,candidate_root))
+
+    if len(candidates)>1:
+        names=', '.join(candidate.name for candidate,_,_ in candidates)
+        raise ValueError(
+            'The character file contains multiple supported humanoid armatures '
+            f'({names}). Keep only one humanoid rig in the FBX and import again.'
+        )
+    if not candidates:
+        names=', '.join(arm.name for arm in arms)
+        details='; '.join(rejected)
+        raise ValueError(
+            'Could not identify a supported humanoid armature. '
+            f'Armatures found: {names}. Rig checks: {details}'
+        )
+
+    arm,mapping,trajectory_root=candidates[0]
     for o in bpy.context.scene.objects:
         o.animation_data_clear()
         if o.type=='MESH':
