@@ -128,7 +128,8 @@ class SamBodyFeatures:
 
         encoder = getattr(self.model.backbone, "encoder", None)
         if encoder is not None and gpu_blocks:
-            split = max(0, len(encoder.blocks) - gpu_blocks)
+            gpu_blocks = min(gpu_blocks, len(encoder.blocks))
+            split = len(encoder.blocks) - gpu_blocks
             for block in encoder.blocks[split:]:
                 block.to("cuda")
             encoder._mocap_gpu_block_start = split
