@@ -94,7 +94,7 @@ class HamerHandFeatures:
             backbone = self.model.backbone
             blocks = getattr(backbone, "blocks", None)
             if blocks is not None:
-                requested = max(0, int(os.environ.get("MOCAP_HAMER_GPU_BLOCKS", "26")))
+                requested = max(0, int(os.environ.get("MOCAP_HAMER_GPU_BLOCKS", "32")))
                 gpu_blocks = min(requested, len(blocks))
                 split = len(blocks) - gpu_blocks
                 for block in blocks[split:]:

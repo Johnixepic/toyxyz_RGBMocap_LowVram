@@ -122,8 +122,8 @@ class SamBodyFeatures:
         gpu_blocks = 0
         if low_memory and torch.cuda.is_available():
             gpu_blocks = max(0, min(
-                int(__import__("os").environ.get("MOCAP_DINO_GPU_BLOCKS", "26")),
-                26,
+                int(__import__("os").environ.get("MOCAP_DINO_GPU_BLOCKS", "32")),
+                32,
             ))
 
         encoder = getattr(self.model.backbone, "encoder", None)
