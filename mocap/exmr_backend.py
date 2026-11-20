@@ -164,7 +164,7 @@ def frame_dir(project,n):
         if json.loads((directory/'receipt.json').read_text(encoding='utf-8'))==identity and len(list(directory.glob('*.jpg')))==n:return directory
     except (OSError,ValueError):pass
     for path in directory.glob('*.jpg'):path.unlink()
-    subprocess.run([executable('ffmpeg'),'-v','error','-i',str(project/'input.mp4'),'-vsync','0','-q:v','2','-start_number','0','-threads','2','-y',str(directory/'%06d.jpg')],check=True,creationflags=NO_WINDOW)
+    subprocess.run([executable('ffmpeg'),'-v','error','-i',str(project/'input.mp4'),'-fps_mode','passthrough','-q:v','2','-start_number','0','-threads','2','-y',str(directory/'%06d.jpg')],check=True,creationflags=NO_WINDOW)
     if len(list(directory.glob('*.jpg')))!=n:raise ValueError('ExMR frame count differs from project')
     atomic_json(directory/'receipt.json',identity)
     return directory
@@ -257,8 +257,10 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
         from .memory_mode import run as memory_run
         def body_features(low):
             model=acquire(model_key('exmr_sam',*[BY_KEY[key].path for key in ('flow_sam','flow_sam_config','flow_mhr')],low_memory=low),
-                lambda:SamBodyFeatures(weights/'sam-3d-body-dinov3',batch_size=8,num_workers=0,low_memory=low))
-            try:return model(directory,boxes,k)
+                lambda:SamBodyFeatures(weights/'sam-3d-body-dinov3',batch_size=2 if low else 8,num_workers=0,low_memory=low))
+            try:return model(directory,boxes,k,
+                checkpoint_path=project/'exmr_body_features.checkpoint.pt',
+                checkpoint_identity=signature)
             finally:release(model)
         body_receipt=project/'exmr_body_partial.json'
         body_valid=False
@@ -277,6 +279,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
             emit('progress',current=0,total=n,message='ExMR: SAM body features')
             values=memory_run('ExMR body features',body_features,5.5,emit)
             save_tensor(values,project/'exmr_body_features.pt');del values;gc.collect();torch.cuda.empty_cache()
+            (project/'exmr_body_features.checkpoint.pt').unlink(missing_ok=True)
             if identity(project,stage)!=signature:raise ValueError('ExMR inputs changed during body feature extraction')
             atomic_json(body_receipt,dict(identity=signature,output=file_stat(project/'exmr_body_features.pt')))
         if feature_phase=='body':
@@ -289,7 +292,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
         emit('progress',current=0,total=n,message='ExMR: left and right hand features')
         def hand_features(low):
             model=acquire(model_key('hamer',*[BY_KEY[key].path for key in ('hand_hamer','hand_mean','mano_right')],low_memory=low),
-                lambda:HamerHandFeatures(weights/'hamer',batch_size=8,num_workers=0,low_memory=low))
+                lambda:HamerHandFeatures(weights/'hamer',batch_size=1 if low else 8,num_workers=0,low_memory=low))
             try:return model(directory,hand_boxes)
             finally:release(model)
         values=memory_run('ExMR hand features',hand_features,5.5,emit)

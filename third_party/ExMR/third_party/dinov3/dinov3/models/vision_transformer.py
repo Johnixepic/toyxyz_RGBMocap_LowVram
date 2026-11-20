@@ -268,17 +268,30 @@ class DinoVisionTransformer(nn.Module):
 
     def _get_intermediate_layers_not_chunked(self, x: Tensor, n: int = 1) -> List[Tensor]:
         x, (H, W) = self.prepare_tokens_with_masks(x)
+        original_device = x.device
+        gpu_start = getattr(self, "_mocap_gpu_block_start", None)
+
         # If n is an int, take the n last blocks. If it's a list, take them
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+
         for i, blk in enumerate(self.blocks):
+            if gpu_start is not None and i == gpu_start:
+                x = x.to(next(blk.parameters()).device)
+
             if self.rope_embed is not None:
                 rope_sincos = self.rope_embed(H=H, W=W)
+                if rope_sincos[0].device != x.device:
+                    rope_sincos = tuple(t.to(x.device) for t in rope_sincos)
             else:
                 rope_sincos = None
+
             x = blk(x, rope_sincos)
             if i in blocks_to_take:
                 output.append(x)
+
+        # The normalization and SAM decoder remain on the original device.
+        output = [out.to(original_device) for out in output]
         assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
         return output
 

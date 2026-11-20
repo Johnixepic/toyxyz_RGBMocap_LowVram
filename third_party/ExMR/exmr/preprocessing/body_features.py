@@ -115,9 +115,29 @@ class SamBodyFeatures:
                 if t.dtype == torch.bfloat16:
                     t.data = t.data.half()
             model.backbone_dtype = torch.float16
-        self.model = model.eval().to(device)
+        self.device = load_device if low_memory else device
+        self.model = model.eval().to(self.device)
+
+        # Optional hybrid CPU/GPU DINOv3 execution for Low Memory mode.
+        gpu_blocks = 0
+        if low_memory and torch.cuda.is_available():
+            gpu_blocks = max(0, min(
+                int(__import__("os").environ.get("MOCAP_DINO_GPU_BLOCKS", "24")),
+                24,
+            ))
+
+        encoder = getattr(self.model.backbone, "encoder", None)
+        if encoder is not None and gpu_blocks:
+            split = max(0, len(encoder.blocks) - gpu_blocks)
+            for block in encoder.blocks[split:]:
+                block.to("cuda")
+            encoder._mocap_gpu_block_start = split
+            print(f"DINOv3 hybrid mode: {len(encoder.blocks) - split} blocks on CUDA")
+        elif encoder is not None:
+            encoder._mocap_gpu_block_start = None
+
         self.input_size = model_cfg.MODEL.IMAGE_SIZE
-        self.batch_size, self.num_workers, self.device = batch_size, num_workers, device
+        self.batch_size, self.num_workers = batch_size, num_workers
 
         # the decoder returns (tokens, pose_output); token 0 is the pose token
         self._tokens = None
@@ -131,46 +151,81 @@ class SamBodyFeatures:
         self._tokens = output[0].detach()
 
     @torch.no_grad()
-    def __call__(self, frame_dir, bbx_xyxy, K_fullimg):
-        """frame_dir with %06d.jpg frames, bbx_xyxy (L, 4), K_fullimg (L, 3, 3) -> (L, 1024)"""
-        # Final pose readouts are unused after the collected body token.
-        # Intermediate pose feedback and keypoint-token updates remain active.
+    def __call__(self, frame_dir, bbx_xyxy, K_fullimg, checkpoint_path=None, checkpoint_identity=None):
+        """Extract one body token per frame, optionally resuming an identity-checked checkpoint."""
+        import os
+        import uuid
+
         self.model._mocap_features_only=True
         self.model.decoder._mocap_features_only=True
         t = self._transforms
-        transform = t.Compose(
-            [
-                t.GetBBoxCenterScale(),
-                t.TopdownAffine(input_size=self.input_size, use_udp=False),
-                t.VisionTransformWrapper(ToTensor()),
-            ]
-        )
+        transform = t.Compose([
+            t.GetBBoxCenterScale(),
+            t.TopdownAffine(input_size=self.input_size, use_udp=False),
+            t.VisionTransformWrapper(ToTensor()),
+        ])
         dataset = _FrameDataset(
             Path(frame_dir), bbx_xyxy, K_fullimg, transform, self._load_image, self._prepare_batch
         )
-        loader = DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
         tokens = torch.zeros((len(dataset), self.TOKEN_DIM), dtype=torch.float32)
-        i = 0
-        with batch_source(loader, batch_bytes=self.batch_size*3*1024*1024*4) as batches, tqdm(total=len(dataset), desc="SAM 3D Body features", unit="frame") as pbar:
-            for batch in batches:
-                bs = batch["img"].shape[0]
-                batch = self._to(batch, self.device)
-                self.model._initialize_batch(batch)
-                self.model.forward_step(batch, decoder_type="body")  # the hook stores the tokens
-                tokens[i : i + bs] = self._tokens[:, 0].cpu()
-                i += bs
-                pbar.update(bs)
-        if not torch.isfinite(tokens).all():
-            raise RuntimeError(
-                "Non-finite SAM 3D Body features, probably a float16 overflow: disable FP16 "
-                "accumulation in run_video (exmr/pipeline.py) and please report this"
+        start = 0
+
+        if checkpoint_path is not None:
+            checkpoint_path = Path(checkpoint_path)
+            try:
+                saved = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+                saved_tokens = saved["tokens"]
+                completed = int(saved["completed"])
+                if (saved["identity"] == checkpoint_identity
+                        and 0 <= completed <= len(dataset)
+                        and tuple(saved_tokens.shape) == (completed, self.TOKEN_DIM)
+                        and bool(torch.isfinite(saved_tokens).all())):
+                    tokens[:completed] = saved_tokens
+                    start = completed
+                    print(f"Resuming SAM body features at frame {start}/{len(dataset)}")
+            except (OSError, ValueError, KeyError, RuntimeError, EOFError, TypeError):
+                pass
+
+        def save_checkpoint(completed):
+            if checkpoint_path is None:
+                return
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = checkpoint_path.with_name(checkpoint_path.name + "." + uuid.uuid4().hex + ".tmp")
+            try:
+                torch.save({
+                    "identity": checkpoint_identity,
+                    "completed": completed,
+                    "tokens": tokens[:completed].clone(),
+                }, temporary)
+                os.replace(temporary, checkpoint_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+        if start < len(dataset):
+            loader = DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                sampler=range(start, len(dataset)),
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
+            i = start
+            with batch_source(loader, batch_bytes=self.batch_size*3*1024*1024*4) as batches, tqdm(
+                total=len(dataset), initial=start, desc="SAM 3D Body features", unit="frame"
+            ) as pbar:
+                for batch in batches:
+                    bs = batch["img"].shape[0]
+                    batch = self._to(batch, self.device)
+                    self.model._initialize_batch(batch)
+                    self.model.forward_step(batch, decoder_type="body")
+                    tokens[i:i + bs] = self._tokens[:, 0].cpu()
+                    i += bs
+                    pbar.update(bs)
+                    if i % 10 == 0 or i == len(dataset):
+                        save_checkpoint(i)
+
+        if not torch.isfinite(tokens).all():
+            raise RuntimeError("Non-finite SAM 3D Body features; refusing to save invalid output")
         return tokens
 
 
