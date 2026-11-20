@@ -153,6 +153,17 @@ def identity(project,stage):
         code=code_hash(Path(__file__)),upstream=sha256(UPSTREAM/'ExMR/RGB_MOCAP_PROVENANCE.json'))
 
 
+def body_feature_identity(signature):
+    """Identity for SAM body tokens, excluding inputs used only by HaMeR."""
+    value = json.loads(json.dumps(signature))
+    value.get('inputs', {}).pop('exmr_keypoints.pt', None)
+    value.get('image_readers', {}).pop('hand_features.py', None)
+    for key in ('hand_hamer', 'hand_mean', 'mano_right'):
+        value.get('models', {}).pop(key, None)
+    value.pop('code', None)  # Body implementation is fingerprinted separately above.
+    return value
+
+
 def frame_dir(project,n):
     import cv2
     from .video import executable
@@ -208,7 +219,9 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
     if n<1:raise ValueError('ExMR clip is empty')
     absent=missing(stage)
     if absent:raise ValueError('Open ExMR Model Manager and prepare: '+', '.join(m.name for m in absent))
-    signature=identity(project,stage);receipt=project/(stage+'_receipt.json');pending=project/(stage+'_pending.json')
+    signature=identity(project,stage)
+    body_signature=body_feature_identity(signature) if stage=='exmr_features' else None
+    receipt=project/(stage+'_receipt.json');pending=project/(stage+'_pending.json')
     outputs={'exmr_preprocess':['exmr_keypoints.pt'],'exmr_features':['exmr_body_features.pt','exmr_hand_features.pt'],
              'exmr':['exmr_results.pt','hmr4d_results.pt','initial_sources.json','exmr_camera_sources.json']}[stage]
     cached=False
@@ -260,7 +273,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
                 lambda:SamBodyFeatures(weights/'sam-3d-body-dinov3',batch_size=2 if low else 8,num_workers=0,low_memory=low))
             try:return model(directory,boxes,k,
                 checkpoint_path=project/'exmr_body_features.checkpoint.pt',
-                checkpoint_identity=signature)
+                checkpoint_identity=body_signature)
             finally:release(model)
         body_receipt=project/'exmr_body_partial.json'
         body_valid=False
@@ -269,7 +282,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
         if feature_phase is not None and (not force or feature_phase=='hand'):
             try:
                 partial=json.loads(body_receipt.read_text(encoding='utf-8'))
-                body_valid=partial['identity']==signature and partial['output']==file_stat(project/'exmr_body_features.pt')
+                body_valid=partial['identity']==body_signature and partial['output']==file_stat(project/'exmr_body_features.pt')
                 if body_valid:
                     values=load(project/'exmr_body_features.pt')
                     body_valid=tuple(values.shape)==(n,1024) and bool(torch.isfinite(values).all())
@@ -281,7 +294,7 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
             save_tensor(values,project/'exmr_body_features.pt');del values;gc.collect();torch.cuda.empty_cache()
             (project/'exmr_body_features.checkpoint.pt').unlink(missing_ok=True)
             if identity(project,stage)!=signature:raise ValueError('ExMR inputs changed during body feature extraction')
-            atomic_json(body_receipt,dict(identity=signature,output=file_stat(project/'exmr_body_features.pt')))
+            atomic_json(body_receipt,dict(identity=body_signature,output=file_stat(project/'exmr_body_features.pt')))
         if feature_phase=='body':
             emit('complete',stage=stage,output=str(project/'exmr_body_features.pt'),cached=body_valid,elapsed=time.monotonic()-started)
             return
