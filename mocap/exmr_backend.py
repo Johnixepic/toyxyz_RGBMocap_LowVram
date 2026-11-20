@@ -282,7 +282,8 @@ def run_stage(project,stage,result,emit,force=False,feature_phase=None):
         if feature_phase is not None and (not force or feature_phase=='hand'):
             try:
                 partial=json.loads(body_receipt.read_text(encoding='utf-8'))
-                body_valid=partial['identity']==body_signature and partial['output']==file_stat(project/'exmr_body_features.pt')
+                # Normalize legacy receipts created before body/hand identities were separated.
+                body_valid=body_feature_identity(partial['identity'])==body_signature and partial['output']==file_stat(project/'exmr_body_features.pt')
                 if body_valid:
                     values=load(project/'exmr_body_features.pt')
                     body_valid=tuple(values.shape)==(n,1024) and bool(torch.isfinite(values).all())
