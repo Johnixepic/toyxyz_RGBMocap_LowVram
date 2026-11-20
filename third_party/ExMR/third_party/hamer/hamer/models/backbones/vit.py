@@ -326,11 +326,22 @@ class ViT(nn.Module):
             # since the first element for pos embed (sin-cos manner) is zero, it will cause no difference
             x = x + self.pos_embed[:, 1:] + self.pos_embed[:, :1]
 
-        for blk in self.blocks:
+        original_device = x.device
+        gpu_start = getattr(self, "_mocap_gpu_block_start", None)
+        for i, blk in enumerate(self.blocks):
+            if gpu_start is not None and i == gpu_start:
+                # Transfer activations once at the CPU/GPU boundary. The
+                # offloaded blocks are stored in FP16 on CUDA to reduce VRAM.
+                parameter = next(blk.parameters())
+                x = x.to(device=parameter.device, dtype=parameter.dtype)
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+
+        if gpu_start is not None:
+            # Keep HaMeR's final normalization and MANO head on CPU.
+            x = x.to(device=original_device, dtype=self.pos_embed.dtype)
 
         x = self.last_norm(x)
 
