@@ -269,7 +269,7 @@ class SamBodyFeatures:
                     + f"frames={i - start}, batch_size={self.batch_size}",
                     flush=True,
                 )
-                if self.device != "cpu":
+                if torch.cuda.is_available():
                     print(
                         "SAM body CUDA peak (MiB): "
                         f"allocated={torch.cuda.max_memory_allocated() / 1024**2:.0f}, "
