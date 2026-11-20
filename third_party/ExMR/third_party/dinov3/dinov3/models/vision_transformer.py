@@ -266,6 +266,37 @@ class DinoVisionTransformer(nn.Module):
         else:
             return self.forward_features_list(x, masks)
 
+    def _mocap_rope_for_device(self, H: int, W: int, device: torch.device):
+        """Reuse deterministic inference RoPE tensors across blocks and batches.
+
+        In hybrid CPU/GPU mode the encoder's RoPE module stays on CPU while
+        transformer blocks may run on CUDA. Cache one copy per device so we
+        don't regenerate sin/cos or transfer them once per block.
+        """
+        if self.training:
+            rope = self.rope_embed(H=H, W=W)
+            return tuple(t.to(device) for t in rope) if rope[0].device != device else rope
+
+        periods = self.rope_embed.periods
+        cache_key = (
+            H, W, periods.device.type, periods.device.index,
+            periods.dtype, periods._version,
+        )
+        cache = getattr(self, "_mocap_rope_cache", None)
+        if cache is None or cache["key"] != cache_key:
+            base = self.rope_embed(H=H, W=W)
+            base_device = (base[0].device.type, base[0].device.index)
+            cache = {"key": cache_key, "values": {base_device: base}}
+            self._mocap_rope_cache = cache
+
+        device_key = (device.type, device.index)
+        rope = cache["values"].get(device_key)
+        if rope is None:
+            source = next(iter(cache["values"].values()))
+            rope = tuple(t.to(device) for t in source)
+            cache["values"][device_key] = rope
+        return rope
+
     def _get_intermediate_layers_not_chunked(self, x: Tensor, n: int = 1) -> List[Tensor]:
         x, (H, W) = self.prepare_tokens_with_masks(x)
         original_device = x.device
@@ -275,16 +306,14 @@ class DinoVisionTransformer(nn.Module):
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
 
+        rope_sincos, rope_device = None, None
         for i, blk in enumerate(self.blocks):
             if gpu_start is not None and i == gpu_start:
                 x = x.to(next(blk.parameters()).device)
 
-            if self.rope_embed is not None:
-                rope_sincos = self.rope_embed(H=H, W=W)
-                if rope_sincos[0].device != x.device:
-                    rope_sincos = tuple(t.to(x.device) for t in rope_sincos)
-            else:
-                rope_sincos = None
+            if self.rope_embed is not None and (self.training or rope_device != x.device):
+                rope_sincos = self._mocap_rope_for_device(H, W, x.device)
+                rope_device = x.device
 
             x = blk(x, rope_sincos)
             if i in blocks_to_take:
