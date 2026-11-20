@@ -230,7 +230,7 @@ class SamBodyFeatures:
                     except StopIteration:
                         break
                     profile_times["batch_wait"] += time.perf_counter() - t0
-                    bs = batch["img"].shape[0"]
+                    bs = batch["img"].shape[0]
 
                     t0 = time.perf_counter()
                     batch = self._to(batch, self.device)
