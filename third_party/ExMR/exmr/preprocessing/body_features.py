@@ -5,6 +5,7 @@ import io
 import logging
 import re
 import sys
+import time
 import warnings
 from pathlib import Path
 
