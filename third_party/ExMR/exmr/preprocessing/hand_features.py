@@ -72,9 +72,12 @@ class HamerHandFeatures:
         cfg.MODEL.BACKBONE.pop("PRETRAINED_WEIGHTS", None)
         cfg.freeze()
         self.cfg = cfg
-        # Fast loading initializes on GPU, without the unused renderer. Low
-        # Memory loads on CPU first to avoid a duplicate GPU checkpoint copy.
-        with torch.device("cpu" if low_memory else device):
+        # Fast mode keeps HaMeR on the GPU. Low-memory mode must keep the
+        # entire model on CPU: loading on CPU and then calling .to("cuda")
+        # still places the 1.3B-parameter ViT backbone on the GPU and can OOM
+        # before the first frame on 4 GB cards.
+        self.device = "cpu" if low_memory else device
+        with torch.device("cpu" if low_memory else self.device):
             self.model = HAMER.load_from_checkpoint(
                 str(data_dir / "hamer_ckpts" / "checkpoints" / "hamer.ckpt"),
                 strict=False,
@@ -82,9 +85,9 @@ class HamerHandFeatures:
                 cfg=cfg,
                 init_renderer=False,
             )
-        self.model.eval().to(device)
-        self.fp16, self.batch_size, self.num_workers, self.device = (
-            fp16, batch_size, num_workers, device
+        self.model.eval().to(self.device)
+        self.fp16, self.batch_size, self.num_workers = (
+            (False if low_memory else fp16), batch_size, num_workers
         )  # fmt: skip
         self._tokens = None
         self._token_hook = self.model.mano_head.transformer.register_forward_hook(self._store_tokens)
