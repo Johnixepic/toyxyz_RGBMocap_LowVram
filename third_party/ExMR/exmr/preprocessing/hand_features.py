@@ -72,10 +72,9 @@ class HamerHandFeatures:
         cfg.MODEL.BACKBONE.pop("PRETRAINED_WEIGHTS", None)
         cfg.freeze()
         self.cfg = cfg
-        # Fast mode keeps HaMeR on the GPU. Low-memory mode must keep the
-        # entire model on CPU: loading on CPU and then calling .to("cuda")
-        # still places the 1.3B-parameter ViT backbone on the GPU and can OOM
-        # before the first frame on 4 GB cards.
+        # Low-memory mode keeps the model on CPU, then places only the final
+        # configurable ViT blocks on CUDA. This mirrors llama.cpp layer
+        # offloading while keeping the MANO head and surrounding modules on CPU.
         self.device = "cpu" if low_memory else device
         with torch.device("cpu" if low_memory else self.device):
             self.model = HAMER.load_from_checkpoint(
@@ -85,10 +84,29 @@ class HamerHandFeatures:
                 cfg=cfg,
                 init_renderer=False,
             )
-        self.model.eval().to(self.device)
+        self.model.eval()
         self.fp16, self.batch_size, self.num_workers = (
             (False if low_memory else fp16), batch_size, num_workers
         )  # fmt: skip
+
+        if low_memory and torch.cuda.is_available():
+            import os
+            backbone = self.model.backbone
+            blocks = getattr(backbone, "blocks", None)
+            if blocks is not None:
+                requested = max(0, int(os.environ.get("MOCAP_HAMER_GPU_BLOCKS", "26")))
+                gpu_blocks = min(requested, len(blocks))
+                split = len(blocks) - gpu_blocks
+                for block in blocks[split:]:
+                    block.to(device="cuda", dtype=torch.float16)
+                backbone._mocap_gpu_block_start = split if gpu_blocks else None
+                print(
+                    f"HaMeR hybrid mode: {len(blocks) - split} / {len(blocks)} "
+                    f"ViT blocks on CUDA (MOCAP_HAMER_GPU_BLOCKS={requested})"
+                )
+            else:
+                print("HaMeR hybrid mode unavailable: backbone has no transformer blocks")
+
         self._tokens = None
         self._token_hook = self.model.mano_head.transformer.register_forward_hook(self._store_tokens)
 
