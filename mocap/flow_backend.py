@@ -36,9 +36,16 @@ def scene_root(project):
     return project
 
 
-def camera_interval(frames,requested=0):
+def camera_interval(frames,requested=0,low_memory=False):
     if requested not in (-1,0,1,2,5,10,30):raise ValueError('Unsupported camera sampling interval')
-    return requested or max(1,math.ceil((frames-1)/127))
+    interval=requested or max(1,math.ceil((frames-1)/127))
+    # VGGT attention activations scale with the number of sampled frames.
+    # Keep explicit static-camera mode, but thin dense camera sampling on
+    # constrained GPUs; the camera sequence is interpolated back to every
+    # original frame by the upstream extractor.
+    if low_memory and interval!=-1:
+        interval=max(interval,6)
+    return interval
 
 
 def validate_length(frames):
@@ -177,7 +184,7 @@ def camera(project,emit,force=False):
         np.savez(target,**static_camera(n,state['width'],state['height']))
         os.replace(target,project/'flow_camera.npz')
         return project/'flow_camera.npz'
-    emit('progress',current=0,total=0,message=f'Estimate one scene camera ({interval}-frame sampling)')
+    emit('progress',current=0,total=0,message='Estimate one scene camera (sampling adapts to memory mode)')
     from flowhmr.utils.runtime_vggt_camera import extract_vggt_camera
     target=project/'flow_camera.partial.npz'
     target.unlink(missing_ok=True)  # upstream must not reuse a partial extraction
@@ -189,8 +196,12 @@ def camera(project,emit,force=False):
             model=load_vggt(path,device,camera_only,low_memory=low);models.append(model);return model
         try:
             target.unlink(missing_ok=True)
+            effective_interval=camera_interval(n,state.get('flow_options',{}).get('camera_interval',0),low_memory=low)
+            if effective_interval!=interval:
+                emit('info',message=f'Low Memory: VGGT camera sampling reduced from every {interval} frames to every {effective_interval} frames; camera values are interpolated across the full clip.')
+            emit('info',message=f'VGGT camera sampling: every {effective_interval} frame(s).')
             return extract_vggt_camera(str(project/'input.mp4'),output_npz=str(target),frame_range=(0,n-1),
-                expected_len=n,frame_interval=interval,keep_frames=False,camera_only=True,model_loader=loader)
+                expected_len=n,frame_interval=effective_interval,keep_frames=False,camera_only=True,model_loader=loader)
         finally:
             for model in models:release(model)
             models.clear()
